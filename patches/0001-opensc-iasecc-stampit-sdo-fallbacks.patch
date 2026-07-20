@@ -1,0 +1,80 @@
+diff --git a/src/libopensc/card-iasecc.c b/src/libopensc/card-iasecc.c
+index f508f1e..7d98ef2 100644
+--- a/src/libopensc/card-iasecc.c
++++ b/src/libopensc/card-iasecc.c
+@@ -1717,19 +1717,31 @@ iasecc_set_security_env(struct sc_card *card,
+ 	sdo.sdo_class = IASECC_SDO_CLASS_RSA_PRIVATE;
+ 	sdo.sdo_ref  = env->key_ref[0] & ~IASECC_OBJECT_REF_LOCAL;
+ 	rv = iasecc_sdo_get_data(card, &sdo);
+-	LOG_TEST_RET(ctx, rv, "Cannot get RSA PRIVATE SDO data");
+-
+-	if (sdo.docp.size.size < 2)
+-		LOG_FUNC_RETURN(ctx, SC_ERROR_INVALID_DATA);
+-	/* To made by iasecc_sdo_convert_to_file() */
+-	prv->key_size = *(sdo.docp.size.value + 0) * 0x100 + *(sdo.docp.size.value + 1);
+-	sc_log(ctx, "prv->key_size 0x%"SC_FORMAT_LEN_SIZE_T"X", prv->key_size);
++	if (rv < 0)   {
++		/* Some IAS-ECC cards (IDEMIA/StampIT) do not expose private-key SDOs via
++		 * GET DATA (6A88 on every SDO read). Fall back to sane defaults: 2048-bit
++		 * key, CHV-protected sign/authenticate. The actual operations work because
++		 * select_key_file() positions the card in the correct DF. */
++		sc_log(ctx, "Cannot get RSA PRIVATE SDO data (rv %i), using defaults", rv);
++		prv->key_size = 256;
++		sign_meth = SC_AC_CHV;
++		sign_ref = 0;
++		auth_meth = SC_AC_CHV;
++		auth_ref = 0;
++	}
++	else   {
++		if (sdo.docp.size.size < 2)
++			LOG_FUNC_RETURN(ctx, SC_ERROR_INVALID_DATA);
++		/* To made by iasecc_sdo_convert_to_file() */
++		prv->key_size = *(sdo.docp.size.value + 0) * 0x100 + *(sdo.docp.size.value + 1);
++		sc_log(ctx, "prv->key_size 0x%"SC_FORMAT_LEN_SIZE_T"X", prv->key_size);
+ 
+-	rv = iasecc_sdo_convert_acl(card, &sdo, SC_AC_OP_PSO_COMPUTE_SIGNATURE, &sign_meth, &sign_ref);
+-	LOG_TEST_RET(ctx, rv, "Cannot convert SC_AC_OP_SIGN acl");
++		rv = iasecc_sdo_convert_acl(card, &sdo, SC_AC_OP_PSO_COMPUTE_SIGNATURE, &sign_meth, &sign_ref);
++		LOG_TEST_RET(ctx, rv, "Cannot convert SC_AC_OP_SIGN acl");
+ 
+-	rv = iasecc_sdo_convert_acl(card, &sdo, SC_AC_OP_INTERNAL_AUTHENTICATE, &auth_meth, &auth_ref);
+-	LOG_TEST_RET(ctx, rv, "Cannot convert SC_AC_OP_INT_AUTH acl");
++		rv = iasecc_sdo_convert_acl(card, &sdo, SC_AC_OP_INTERNAL_AUTHENTICATE, &auth_meth, &auth_ref);
++		LOG_TEST_RET(ctx, rv, "Cannot convert SC_AC_OP_INT_AUTH acl");
++	}
+ 
+ 	aflags = env->algorithm_flags;
+ 
+@@ -2160,7 +2172,13 @@ iasecc_pin_get_info(struct sc_card *card, struct sc_pin_cmd_data *data)
+ 	LOG_TEST_RET(ctx, rv, "Failed to get PIN status");
+ 
+ 	rv = iasecc_pin_get_policy(card, data, &policy);
+-	LOG_TEST_RET(ctx, rv, "Failed to get PIN policy");
++	if (rv < 0)   {
++		/* SDO metadata unsupported (6A88 on GET DATA, e.g. IDEMIA/StampIT):
++		 * report what the PIN status gave us; max_tries stays unknown. */
++		sc_log(ctx, "Failed to get PIN policy (rv %i), using PIN status only", rv);
++		data->pin1.max_tries = -1;
++		LOG_FUNC_RETURN(ctx, SC_SUCCESS);
++	}
+ 
+ 	/*
+ 	 * We only care about the tries_xxx fields in the PIN policy, since the other ones are not
+@@ -2231,7 +2249,16 @@ iasecc_pin_merge_policy(struct sc_card *card, struct sc_pin_cmd_data *data,
+ 	LOG_TEST_RET(ctx, rv, "Invalid PIN");
+ 
+ 	rv = iasecc_pin_get_policy(card, data, policy);
+-	LOG_TEST_RET(ctx, rv, "Failed to get PIN policy");
++	if (rv < 0)   {
++		/* Some IAS-ECC cards (IDEMIA/StampIT) return 6A88 for every SDO GET DATA:
++		 * the SDO metadata layer is unsupported while the ISO VERIFY command works.
++		 * Continue with an empty policy instead of failing the whole PIN command. */
++		sc_log(ctx, "Failed to get PIN policy (rv %i), continue with empty policy", rv);
++		memset(policy, 0, sizeof(*policy));
++		policy->tries_maximum = -1;
++		policy->tries_remaining = -1;
++		rv = SC_SUCCESS;
++	}
+ 
+ 	/* Some cards obviously use the min/max length fields to signal PIN padding */
+ 	if (policy->min_length > 0 && policy->min_length == policy->max_length) {

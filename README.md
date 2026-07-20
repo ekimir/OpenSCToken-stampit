@@ -1,5 +1,12 @@
 # OpenSCToken: Use OpenSC in CryptoTokenKit
 
+> **Fork notice (`stampit` branch):** this fork carries patches for Bulgarian
+> StampIT qualified-signature cards (IAS-ECC, IDEMIA) — see
+> [`patches/README.md`](patches/README.md) for what changed and why. Builds are
+> produced by the GitHub Actions workflow in
+> [`.github/workflows/build.yml`](.github/workflows/build.yml) against a pinned
+> OpenSC commit. Upstream: <https://github.com/frankmorgner/OpenSCToken>.
+
 CryptoTokenKit is Apple's take on programmatic access to smart cards and other tokens. It provides both low level access to tokens (comparable with PC/SC) and high level access for system wide integration of a token (comparable with Windows Smart Card Minidriver).
 
 For further information about smart cards in macOS please read the following ressources:

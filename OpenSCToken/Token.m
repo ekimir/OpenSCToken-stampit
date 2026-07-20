@@ -19,6 +19,7 @@
 @import os.log;
 @import Foundation;
 @import CryptoTokenKit;
+@import Security;
 
 #include "libopensc/log.h"
 #include "libopensc/pkcs15.h"
@@ -26,6 +27,34 @@
 #include "eac/eac.h"
 
 #import "Token.h"
+
+
+/* Expired certificates must not become keychain identities: pickers (Acrobat,
+ * browser client-auth) cannot distinguish two certs with the same subject name,
+ * and selecting the expired one fails the signature. Fail-open: if the validity
+ * cannot be parsed, the certificate is kept. */
+static BOOL certificateIsExpired(SecCertificateRef certificate)
+{
+    BOOL expired = NO;
+    const void *oids[] = { kSecOIDX509V1ValidityNotAfter };
+    CFArrayRef keys = CFArrayCreate(kCFAllocatorDefault, oids, 1, &kCFTypeArrayCallBacks);
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    CFDictionaryRef values = SecCertificateCopyValues(certificate, keys, NULL);
+#pragma clang diagnostic pop
+    if (values != NULL) {
+        CFDictionaryRef prop = CFDictionaryGetValue(values, kSecOIDX509V1ValidityNotAfter);
+        if (prop != NULL) {
+            CFNumberRef num = CFDictionaryGetValue(prop, kSecPropertyKeyValue);
+            CFAbsoluteTime notAfter = 0;
+            if (num != NULL && CFNumberGetValue(num, kCFNumberDoubleType, &notAfter))
+                expired = notAfter < CFAbsoluteTimeGetCurrent();
+        }
+        CFRelease(values);
+    }
+    CFRelease(keys);
+    return expired;
+}
 
 
 @implementation TKTokenKeychainItem(OpenSCDataFormat)
@@ -128,6 +157,11 @@
         NSString *certificateName = [NSString stringWithUTF8String:objs[i]->label];
         id certificate = CFBridgingRelease(SecCertificateCreateWithData(kCFAllocatorDefault, (CFDataRef)certificateData));
         if (certificateData == nil || certificateID == nil || certificateName == nil || certificate == NULL) {
+            sc_pkcs15_free_certificate(cert);
+            continue;
+        }
+        if (certificateIsExpired((__bridge SecCertificateRef)certificate)) {
+            sc_log(ctx, "Skipping expired certificate '%s'", objs[i]->label);
             sc_pkcs15_free_certificate(cert);
             continue;
         }

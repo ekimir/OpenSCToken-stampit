@@ -49,20 +49,18 @@ static unsigned int algorithmToFlags(TKTokenKeyAlgorithm * algorithm)
         || [algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureRaw])
         return SC_ALGORITHM_RSA_RAW;
     
-    /* TODO untested
-    if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15Raw])
+    /* The caller hands us the bare digest for the PKCS1v15 Digest* algorithms.
+     * We wrap it in a DigestInfo structure in software (see signData:) and let
+     * the card apply PKCS#1 type-01 padding over raw RSA-PKCS: cards like the
+     * IAS-ECC IDEMIA (StampIT) have no on-card hashing, and this matches the
+     * INTERNAL AUTHENTICATE path that such cards support. */
+    if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15Raw]
+        || [algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA1]
+        || [algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA224]
+        || [algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA256]
+        || [algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA384]
+        || [algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA512])
         return SC_ALGORITHM_RSA_PAD_PKCS1_TYPE_01 | SC_ALGORITHM_RSA_HASH_NONE;
-    if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA1])
-        return SC_ALGORITHM_RSA_PAD_PKCS1_TYPE_01 | SC_ALGORITHM_RSA_HASH_SHA1;
-    if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA224])
-        return SC_ALGORITHM_RSA_PAD_PKCS1_TYPE_01 | SC_ALGORITHM_RSA_HASH_SHA224;
-    if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA256])
-        return SC_ALGORITHM_RSA_PAD_PKCS1_TYPE_01 | SC_ALGORITHM_RSA_HASH_SHA256;
-    if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA384])
-        return SC_ALGORITHM_RSA_PAD_PKCS1_TYPE_01 | SC_ALGORITHM_RSA_HASH_SHA384;
-    if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA512])
-        return SC_ALGORITHM_RSA_PAD_PKCS1_TYPE_01 | SC_ALGORITHM_RSA_HASH_SHA512;
-     */
 
     if ([algorithm isAlgorithm:kSecKeyAlgorithmECDSASignatureRFC4754]
         || [algorithm isAlgorithm:kSecKeyAlgorithmECDSASignatureDigestX962]
@@ -508,7 +506,34 @@ err:
         default:
             return nil;
     }
-    int r = sc_pkcs15_compute_signature(self.OpenSCToken.p15card, prkey_obj, algorithmToFlags(algorithm), [dataToSign bytes], [dataToSign length], (unsigned char *) [out bytes], [out length], NULL);
+    /* For the PKCS1v15 Digest* algorithms CTK passes the bare digest; the card
+     * signs a complete DigestInfo via raw RSA-PKCS, so prepend the prefix here. */
+    static const unsigned char di_sha1[]   = {0x30,0x21,0x30,0x09,0x06,0x05,0x2b,0x0e,0x03,0x02,0x1a,0x05,0x00,0x04,0x14};
+    static const unsigned char di_sha224[] = {0x30,0x2d,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x04,0x05,0x00,0x04,0x1c};
+    static const unsigned char di_sha256[] = {0x30,0x31,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x01,0x05,0x00,0x04,0x20};
+    static const unsigned char di_sha384[] = {0x30,0x41,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x02,0x05,0x00,0x04,0x30};
+    static const unsigned char di_sha512[] = {0x30,0x51,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x03,0x05,0x00,0x04,0x40};
+    const unsigned char *di_prefix = NULL;
+    size_t di_prefix_len = 0;
+    if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA1]) {
+        di_prefix = di_sha1;   di_prefix_len = sizeof di_sha1;
+    } else if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA224]) {
+        di_prefix = di_sha224; di_prefix_len = sizeof di_sha224;
+    } else if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA256]) {
+        di_prefix = di_sha256; di_prefix_len = sizeof di_sha256;
+    } else if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA384]) {
+        di_prefix = di_sha384; di_prefix_len = sizeof di_sha384;
+    } else if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA512]) {
+        di_prefix = di_sha512; di_prefix_len = sizeof di_sha512;
+    }
+    NSData *dataForCard = dataToSign;
+    if (di_prefix != NULL) {
+        NSMutableData *wrapped = [NSMutableData dataWithBytes:di_prefix length:di_prefix_len];
+        [wrapped appendData:dataToSign];
+        dataForCard = wrapped;
+    }
+
+    int r = sc_pkcs15_compute_signature(self.OpenSCToken.p15card, prkey_obj, algorithmToFlags(algorithm), [dataForCard bytes], [dataForCard length], (unsigned char *) [out bytes], [out length], NULL);
 
     if (0 > r) {
         statusToError(r, error);
