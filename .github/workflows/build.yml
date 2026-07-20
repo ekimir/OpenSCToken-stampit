@@ -28,19 +28,19 @@ jobs:
 
       - name: Build OpenSCTokenApp
         run: |
-          xcodebuild -target OpenSCTokenApp -configuration Release -derivedDataPath dd \
+          xcodebuild -target OpenSCTokenApp -configuration Release SYMROOT="$PWD/xcbuild" \
             CODE_SIGN_IDENTITY="-" DEVELOPMENT_TEAM="" \
             GCC_TREAT_WARNINGS_AS_ERRORS=NO OTHER_CFLAGS="-DNDEBUG"
 
       - name: Verify architectures and signature
         run: |
-          APP=dd/Build/Products/Release/OpenSCTokenApp.app
+          APP=xcbuild/Release/OpenSCTokenApp.app
           lipo -info "$APP/Contents/MacOS/OpenSCTokenApp"
           lipo -info "$APP/Contents/PlugIns/OpenSCToken.appex/Contents/MacOS/OpenSCToken"
           codesign --verify --deep "$APP"
 
       - name: Package artifact
-        run: ditto -c -k --keepParent dd/Build/Products/Release/OpenSCTokenApp.app OpenSCTokenApp.zip
+        run: ditto -c -k --keepParent xcbuild/Release/OpenSCTokenApp.app OpenSCTokenApp.zip
 
       - uses: actions/upload-artifact@v4
         with:
