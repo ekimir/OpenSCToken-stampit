@@ -50,10 +50,12 @@ static unsigned int algorithmToFlags(TKTokenKeyAlgorithm * algorithm)
         return SC_ALGORITHM_RSA_RAW;
     
     /* The caller hands us the bare digest for the PKCS1v15 Digest* algorithms.
-     * We wrap it in a DigestInfo structure in software (see signData:) and let
-     * the card apply PKCS#1 type-01 padding over raw RSA-PKCS: cards like the
-     * IAS-ECC IDEMIA (StampIT) have no on-card hashing, and this matches the
-     * INTERNAL AUTHENTICATE path that such cards support. */
+     * We wrap it in a DigestInfo structure in software (see signData:). Cards
+     * without on-card hashing, like the IAS-ECC IDEMIA (StampIT until 2026),
+     * apply PKCS#1 type-01 padding over it via raw RSA-PKCS (the INTERNAL
+     * AUTHENTICATE path). For cards that only hash on-card, like the Gemalto
+     * IDPrime (StampIT since 2026), sc_pkcs15_compute_signature() strips the
+     * DigestInfo again and the card signs the bare hash (see supportsOperation). */
     if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15Raw]
         || [algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA1]
         || [algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA224]
@@ -99,6 +101,22 @@ static unsigned int algorithmToFlags(TKTokenKeyAlgorithm * algorithm)
         return SC_ALGORITHM_ECDH_CDH_RAW;
 
     return (unsigned int) -1;
+}
+
+/* The on-card hash flag for a PKCS1v15 Digest* algorithm, or 0 if none. */
+static unsigned int pkcs1DigestHashFlag(TKTokenKeyAlgorithm * algorithm)
+{
+    if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA1])
+        return SC_ALGORITHM_RSA_HASH_SHA1;
+    if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA224])
+        return SC_ALGORITHM_RSA_HASH_SHA224;
+    if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA256])
+        return SC_ALGORITHM_RSA_HASH_SHA256;
+    if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA384])
+        return SC_ALGORITHM_RSA_HASH_SHA384;
+    if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA512])
+        return SC_ALGORITHM_RSA_HASH_SHA512;
+    return 0;
 }
 
 static void statusToError(int sc_status, NSError **error)
@@ -404,8 +422,17 @@ err:
     unsigned int minimum_flags = algorithmToFlags(algorithm);
     switch (prkey_obj->type) {
         case SC_PKCS15_TYPE_PRKEY_RSA:
-            if ((rsa_flags & minimum_flags) != minimum_flags)
-                return NO;
+            if ((rsa_flags & minimum_flags) != minimum_flags) {
+                /* Cards that only hash on-card (e.g. Gemalto IDPrime, StampIT
+                 * since 2026) offer PKCS#1 v1.5 with a named hash but no
+                 * HASH_NONE. sc_pkcs15_compute_signature() strips the
+                 * DigestInfo that signData: prepends and asks the card to
+                 * sign the bare hash with that named hash instead. */
+                unsigned int hash_flag = pkcs1DigestHashFlag(algorithm);
+                unsigned int card_flags = SC_ALGORITHM_RSA_PAD_PKCS1_TYPE_01 | hash_flag;
+                if (hash_flag == 0 || (rsa_flags & card_flags) != card_flags)
+                    return NO;
+            }
             break;
         case SC_PKCS15_TYPE_PRKEY_EC:
             if ((ec_flags & minimum_flags) != minimum_flags)
@@ -506,8 +533,10 @@ err:
         default:
             return nil;
     }
-    /* For the PKCS1v15 Digest* algorithms CTK passes the bare digest; the card
-     * signs a complete DigestInfo via raw RSA-PKCS, so prepend the prefix here. */
+    /* For the PKCS1v15 Digest* algorithms CTK passes the bare digest. Prepend
+     * the DigestInfo prefix: cards without on-card hashing sign the complete
+     * DigestInfo via raw RSA-PKCS; for on-card-hashing cards OpenSC strips it
+     * and passes the hash type instead. */
     static const unsigned char di_sha1[]   = {0x30,0x21,0x30,0x09,0x06,0x05,0x2b,0x0e,0x03,0x02,0x1a,0x05,0x00,0x04,0x14};
     static const unsigned char di_sha224[] = {0x30,0x2d,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x04,0x05,0x00,0x04,0x1c};
     static const unsigned char di_sha256[] = {0x30,0x31,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x01,0x05,0x00,0x04,0x20};
