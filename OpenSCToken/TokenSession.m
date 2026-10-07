@@ -101,6 +101,22 @@ static unsigned int algorithmToFlags(TKTokenKeyAlgorithm * algorithm)
     return (unsigned int) -1;
 }
 
+/* The on-card hash flag for a PKCS1v15 Digest* algorithm, or 0 if none. */
+static unsigned int pkcs1DigestHashFlag(TKTokenKeyAlgorithm * algorithm)
+{
+    if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA1])
+        return SC_ALGORITHM_RSA_HASH_SHA1;
+    if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA224])
+        return SC_ALGORITHM_RSA_HASH_SHA224;
+    if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA256])
+        return SC_ALGORITHM_RSA_HASH_SHA256;
+    if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA384])
+        return SC_ALGORITHM_RSA_HASH_SHA384;
+    if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA512])
+        return SC_ALGORITHM_RSA_HASH_SHA512;
+    return 0;
+}
+
 static void statusToError(int sc_status, NSError **error)
 {
     if (error == nil || sc_status >= 0) {
@@ -404,8 +420,17 @@ err:
     unsigned int minimum_flags = algorithmToFlags(algorithm);
     switch (prkey_obj->type) {
         case SC_PKCS15_TYPE_PRKEY_RSA:
-            if ((rsa_flags & minimum_flags) != minimum_flags)
-                return NO;
+            if ((rsa_flags & minimum_flags) != minimum_flags) {
+                /* Cards that only hash on-card (e.g. Gemalto IDPrime, StampIT
+                 * since 2026) offer PKCS#1 v1.5 with a named hash but no
+                 * HASH_NONE. sc_pkcs15_compute_signature() strips the
+                 * DigestInfo that signData: prepends and asks the card to
+                 * sign the bare hash with that named hash instead. */
+                unsigned int hash_flag = pkcs1DigestHashFlag(algorithm);
+                unsigned int card_flags = SC_ALGORITHM_RSA_PAD_PKCS1_TYPE_01 | hash_flag;
+                if (hash_flag == 0 || (rsa_flags & card_flags) != card_flags)
+                    return NO;
+            }
             break;
         case SC_PKCS15_TYPE_PRKEY_EC:
             if ((ec_flags & minimum_flags) != minimum_flags)
