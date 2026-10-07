@@ -1,0 +1,42 @@
+diff --git a/src/libopensc/card-idprime.c b/src/libopensc/card-idprime.c
+index 6c3e079..c6ea464 100644
+--- a/src/libopensc/card-idprime.c
++++ b/src/libopensc/card-idprime.c
+@@ -278,6 +278,29 @@ static int idprime_select_idprime(sc_card_t *card)
+ 	return iso_ops->select_file(card, &idprime_path, NULL);
+ }
+ 
++/* After a reset the card starts in its default applet, not IDPrime: an
++ * IDPrime 940 on macOS is reset after ~10 s idle, and a VERIFY then gets
++ * 6D00. Ask for the user PIN status (no PIN sent, no try used) and
++ * re-select IDPrime only if it does not answer, so that a PIN verified in
++ * an earlier lock stays verified. */
++static int idprime_card_reader_lock_obtained(sc_card_t *card, int was_reset)
++{
++	sc_apdu_t apdu;
++	int r;
++
++	SC_FUNC_CALLED(card->ctx, SC_LOG_DEBUG_VERBOSE);
++
++	if (was_reset <= 0) {
++		sc_format_apdu(card, &apdu, SC_APDU_CASE_1, 0x20, 0x00, 0x11);
++		r = sc_transmit_apdu(card, &apdu);
++		if (r == SC_SUCCESS && (apdu.sw1 == 0x63 || (apdu.sw1 == 0x90 && apdu.sw2 == 0x00)))
++			LOG_FUNC_RETURN(card->ctx, SC_SUCCESS);
++	}
++
++	r = idprime_select_idprime(card);
++	LOG_FUNC_RETURN(card->ctx, r);
++}
++
+ /* Select file by string path */
+ static int idprime_select_file_by_path(sc_card_t *card, const char *str_path)
+ {
+@@ -1266,6 +1289,7 @@ static struct sc_card_driver * sc_get_driver(void)
+ 	idprime_ops.read_binary = idprime_read_binary;
+ 	idprime_ops.select_file = idprime_select_file;
+ 	idprime_ops.card_ctl = idprime_card_ctl;
++	idprime_ops.card_reader_lock_obtained = idprime_card_reader_lock_obtained;
+ 	idprime_ops.set_security_env = idprime_set_security_env;
+ 	idprime_ops.compute_signature = idprime_compute_signature;
+ 	idprime_ops.decipher = idprime_decipher;
