@@ -50,10 +50,12 @@ static unsigned int algorithmToFlags(TKTokenKeyAlgorithm * algorithm)
         return SC_ALGORITHM_RSA_RAW;
     
     /* The caller hands us the bare digest for the PKCS1v15 Digest* algorithms.
-     * We wrap it in a DigestInfo structure in software (see signData:) and let
-     * the card apply PKCS#1 type-01 padding over raw RSA-PKCS: cards like the
-     * IAS-ECC IDEMIA (StampIT) have no on-card hashing, and this matches the
-     * INTERNAL AUTHENTICATE path that such cards support. */
+     * We wrap it in a DigestInfo structure in software (see signData:). Cards
+     * without on-card hashing, like the IAS-ECC IDEMIA (StampIT until 2026),
+     * apply PKCS#1 type-01 padding over it via raw RSA-PKCS (the INTERNAL
+     * AUTHENTICATE path). For cards that only hash on-card, like the Gemalto
+     * IDPrime (StampIT since 2026), sc_pkcs15_compute_signature() strips the
+     * DigestInfo again and the card signs the bare hash (see supportsOperation). */
     if ([algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15Raw]
         || [algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA1]
         || [algorithm isAlgorithm:kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA224]
@@ -531,8 +533,10 @@ err:
         default:
             return nil;
     }
-    /* For the PKCS1v15 Digest* algorithms CTK passes the bare digest; the card
-     * signs a complete DigestInfo via raw RSA-PKCS, so prepend the prefix here. */
+    /* For the PKCS1v15 Digest* algorithms CTK passes the bare digest. Prepend
+     * the DigestInfo prefix: cards without on-card hashing sign the complete
+     * DigestInfo via raw RSA-PKCS; for on-card-hashing cards OpenSC strips it
+     * and passes the hash type instead. */
     static const unsigned char di_sha1[]   = {0x30,0x21,0x30,0x09,0x06,0x05,0x2b,0x0e,0x03,0x02,0x1a,0x05,0x00,0x04,0x14};
     static const unsigned char di_sha224[] = {0x30,0x2d,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x04,0x05,0x00,0x04,0x1c};
     static const unsigned char di_sha256[] = {0x30,0x31,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x01,0x05,0x00,0x04,0x20};
